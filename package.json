@@ -1,6 +1,6 @@
 {
   "name": "@tapapplink/react-native",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tap App Link attribution SDK for React Native and Expo",
   "license": "MIT",
   "homepage": "https://tapapplink.com",
@@ -32,7 +32,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "npx tsc",
     "prepublishOnly": "npm run build"
   },
   "publishConfig": {

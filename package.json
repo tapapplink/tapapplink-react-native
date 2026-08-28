@@ -1,15 +1,15 @@
 {
   "name": "@tapapplink/react-native",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Tap App Link attribution SDK for React Native and Expo",
   "license": "MIT",
   "homepage": "https://tapapplink.com",
   "repository": {
     "type": "git",
-    "url": "https://github.com/KennyYe/tapapplink-react-native.git"
+    "url": "https://github.com/tapapplink/tapapplink-react-native.git"
   },
   "bugs": {
-    "url": "https://github.com/KennyYe/tapapplink-react-native/issues"
+    "url": "https://github.com/tapapplink/tapapplink-react-native/issues"
   },
   "keywords": [
     "react-native",

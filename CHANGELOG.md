@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Point `repository` and `bugs` at the tapapplink GitHub org.
+
 ## 0.1.1
 
 - Point `repository` and `bugs` at the public GitHub repo.

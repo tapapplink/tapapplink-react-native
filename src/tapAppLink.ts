@@ -13,7 +13,6 @@ export type TapAppLinkConfig = {
   publicKey: string;
   environment: TapAppLinkEnvironment;
   ingestUrl?: string;
-  debugSessionId?: string;
 };
 
 type NativeSignals = {
@@ -117,7 +116,6 @@ export const TapAppLink = {
       networkContext: signals.networkContext,
       installReferrer: signals.installReferrer,
       firstOpenAt: new Date().toISOString(),
-      debugSessionId: config?.debugSessionId,
     });
     tracked = true;
     cacheFromResult(result);
@@ -129,7 +127,6 @@ export const TapAppLink = {
     return post("/ingestIdentify", {
       appUserId,
       attributionId: lastAttributionId,
-      debugSessionId: config?.debugSessionId,
     });
   },
 
@@ -144,7 +141,6 @@ export const TapAppLink = {
           : Platform.OS === "android"
             ? "ANDROID"
             : "UNKNOWN",
-      debugSessionId: config?.debugSessionId,
     });
     cacheFromResult(result);
     return result;

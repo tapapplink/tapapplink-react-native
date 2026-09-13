@@ -5,7 +5,6 @@ export type TapAppLinkEnvironment = "production" | "sandbox";
 export type TapAppLinkOffer = {
   creatorName: string;
   promoCode: string | null;
-  discountBps: number;
   billingOfferId: string | null;
 };
 

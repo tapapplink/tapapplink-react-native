@@ -10,6 +10,9 @@ import {
   type PersistedInstallState,
 } from "./storage";
 
+/** Sent as `X-TapAppLink-SDK-Version` on every request. */
+export const SDK_VERSION = "0.3.1";
+
 export type TapAppLinkEnvironment = "production" | "sandbox";
 
 export type TapAppLinkOffer = {
@@ -26,6 +29,42 @@ export type TapAppLinkConfig = {
   debug?: boolean;
 };
 
+export type TapAppLinkRedeemErrorCode =
+  | "unknownCode"
+  | "inactiveCode"
+  | "wrongEnvironment"
+  | "network"
+  | "other";
+
+/**
+ * Thrown by `applyCode` when the redeem endpoint fails or the request cannot
+ * complete. Inspect `code` to choose customer-facing copy.
+ */
+export class TapAppLinkRedeemError extends Error {
+  readonly name = "TapAppLinkRedeemError";
+  readonly code: TapAppLinkRedeemErrorCode;
+  /** HTTP status when the server responded; omitted for network failures. */
+  readonly status?: number;
+
+  /**
+   * Developer-only warning for `wrongEnvironment`. Log this; never show it to
+   * customers (they should see the same copy as `unknownCode`).
+   */
+  static readonly wrongEnvironmentDevWarning =
+    "This code belongs to the other environment (Sandbox or Production). Check your API key.";
+
+  constructor(
+    code: TapAppLinkRedeemErrorCode,
+    message: string,
+    status?: number,
+  ) {
+    super(message);
+    this.code = code;
+    this.status = status;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 type NativeSignals = {
   deviceFamily?: string;
   locale?: string;
@@ -36,6 +75,19 @@ type NativeSignals = {
 type NativeTapAppLink = {
   getInstallSignals?: () => Promise<NativeSignals>;
 };
+
+class TapAppLinkHttpError extends Error {
+  readonly status: number;
+  readonly body: Record<string, unknown>;
+
+  constructor(status: number, body: Record<string, unknown>, message: string) {
+    super(message);
+    this.name = "TapAppLinkHttpError";
+    this.status = status;
+    this.body = body;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
 
 const nativeModule = (): NativeTapAppLink => NativeModules.TapAppLink ?? {};
 
@@ -138,6 +190,22 @@ const ingestBase = (cfg: TapAppLinkConfig): string => {
   return "https://us-central1-tapapplink.cloudfunctions.net";
 };
 
+const parseJsonBody = async (
+  response: Response,
+): Promise<Record<string, unknown>> => {
+  try {
+    const parsed: unknown = await response.json();
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Non-JSON bodies still need a status check below.
+  }
+  return {};
+};
+
+const isOkStatus = (status: number): boolean => status >= 200 && status < 300;
+
 const post = async (path: string, body: unknown) => {
   if (!config) {
     throw new Error("TapAppLink.configure() must be called first");
@@ -146,6 +214,7 @@ const post = async (path: string, body: unknown) => {
   const headers = {
     Authorization: `Bearer ${config.publicKey}`,
     "Content-Type": "application/json",
+    "X-TapAppLink-SDK-Version": SDK_VERSION,
   };
   debugLog("request", {
     url,
@@ -156,14 +225,79 @@ const post = async (path: string, body: unknown) => {
     },
     body,
   });
-  const response = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
-  const result = (await response.json()) as Record<string, unknown>;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch (cause) {
+    const message =
+      cause instanceof Error ? cause.message : "Network request failed";
+    throw new Error(message);
+  }
+  const result = await parseJsonBody(response);
   debugLog("response", { url, status: response.status, body: result });
+  if (!isOkStatus(response.status)) {
+    const serverMessage =
+      typeof result.message === "string"
+        ? result.message
+        : typeof result.error === "string"
+          ? result.error
+          : `Request failed with status ${response.status}`;
+    throw new TapAppLinkHttpError(response.status, result, serverMessage);
+  }
   return result;
+};
+
+const mapRedeemError = (error: unknown): TapAppLinkRedeemError => {
+  if (error instanceof TapAppLinkRedeemError) {
+    return error;
+  }
+  if (error instanceof TapAppLinkHttpError) {
+    const bodyError =
+      typeof error.body.error === "string" ? error.body.error : undefined;
+    const message =
+      typeof error.body.message === "string"
+        ? error.body.message
+        : error.message;
+
+    if (bodyError === "unknown_code") {
+      return new TapAppLinkRedeemError("unknownCode", message, error.status);
+    }
+    if (bodyError === "inactive_code") {
+      return new TapAppLinkRedeemError("inactiveCode", message, error.status);
+    }
+    if (bodyError === "wrong_environment") {
+      return new TapAppLinkRedeemError(
+        "wrongEnvironment",
+        message,
+        error.status,
+      );
+    }
+
+    // Status fallback when the body lacks a known `error` field.
+    if (error.status === 404) {
+      return new TapAppLinkRedeemError("unknownCode", message, error.status);
+    }
+    if (error.status === 410) {
+      return new TapAppLinkRedeemError("inactiveCode", message, error.status);
+    }
+    if (error.status === 400 && bodyError === "wrong_environment") {
+      return new TapAppLinkRedeemError(
+        "wrongEnvironment",
+        message,
+        error.status,
+      );
+    }
+
+    return new TapAppLinkRedeemError("other", message, error.status);
+  }
+
+  const message =
+    error instanceof Error ? error.message : "Network request failed";
+  return new TapAppLinkRedeemError("network", message);
 };
 
 const cacheFromResult = (result: Record<string, unknown>) => {
@@ -241,15 +375,19 @@ export const TapAppLink = {
 
   applyCode: async (code: string) => {
     await ensureHydrated();
-    const result = await post("/redeemCode", {
-      code,
-      appUserId: lastAppUserId,
-      attributionId: lastAttributionId,
-      platform: platformName(),
-    });
-    cacheFromResult(result);
-    await persist();
-    return result;
+    try {
+      const result = await post("/redeemCode", {
+        code,
+        appUserId: lastAppUserId,
+        attributionId: lastAttributionId,
+        platform: platformName(),
+      });
+      cacheFromResult(result);
+      await persist();
+      return result;
+    } catch (error) {
+      throw mapRedeemError(error);
+    }
   },
 
   getOffer: () => lastOffer,

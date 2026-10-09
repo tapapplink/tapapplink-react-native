@@ -1,3 +1,8 @@
+export type PendingRedeemState = {
+  normalisedCode: string;
+  requestId: string;
+};
+
 export type PersistedInstallState = {
   installId: string;
   tracked: boolean;
@@ -7,6 +12,8 @@ export type PersistedInstallState = {
     promoCode: string | null;
     billingOfferId: string | null;
   } | null;
+  /** Pending redeem attempt so retries after restart reuse the same requestId. */
+  pendingRedeem?: PendingRedeemState | null;
 };
 
 export type KeyValueStorage = {
@@ -70,6 +77,18 @@ export const loadInstallState = async (
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PersistedInstallState;
     if (!parsed || typeof parsed.installId !== "string") return null;
+    const pending = parsed.pendingRedeem;
+    const pendingRedeem =
+      pending &&
+      typeof pending === "object" &&
+      typeof pending.normalisedCode === "string" &&
+      typeof pending.requestId === "string"
+        ? {
+            normalisedCode: pending.normalisedCode,
+            requestId: pending.requestId,
+          }
+        : null;
+
     return {
       installId: parsed.installId,
       tracked: Boolean(parsed.tracked),
@@ -78,6 +97,7 @@ export const loadInstallState = async (
           ? parsed.attributionId
           : undefined,
       offer: parsed.offer ?? null,
+      pendingRedeem,
     };
   } catch {
     return null;

@@ -1,4 +1,14 @@
 import { NativeModules, Platform } from "react-native";
+import {
+  clearInstallState,
+  createInstallId,
+  loadInstallState,
+  resetStorageHelpersForTesting,
+  resolveStorage,
+  saveInstallState,
+  type KeyValueStorage,
+  type PersistedInstallState,
+} from "./storage";
 
 export type TapAppLinkEnvironment = "production" | "sandbox";
 
@@ -12,6 +22,8 @@ export type TapAppLinkConfig = {
   publicKey: string;
   environment: TapAppLinkEnvironment;
   ingestUrl?: string;
+  /** When true, logs requests, responses and stored state with the API key redacted. */
+  debug?: boolean;
 };
 
 type NativeSignals = {
@@ -58,10 +70,68 @@ const collectSignals = async (): Promise<NativeSignals> => {
 };
 
 let config: TapAppLinkConfig | null = null;
+let storage: KeyValueStorage = resolveStorage();
+let hydratePromise: Promise<void> | null = null;
+let installId: string | undefined;
 let tracked = false;
 let lastAttributionId: string | undefined;
 let lastAppUserId: string | undefined;
 let lastOffer: TapAppLinkOffer | null = null;
+
+const redactKey = (value: string): string => {
+  if (value.length <= 8) return "***";
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+};
+
+const debugEnabled = (): boolean => Boolean(config?.debug);
+
+const debugLog = (message: string, details?: unknown) => {
+  if (!debugEnabled()) return;
+  if (details === undefined) {
+    console.log(`[TapAppLink] ${message}`);
+    return;
+  }
+  console.log(`[TapAppLink] ${message}`, details);
+};
+
+const applyPersisted = (state: PersistedInstallState) => {
+  installId = state.installId;
+  tracked = state.tracked;
+  lastAttributionId = state.attributionId;
+  lastOffer = state.offer ?? null;
+};
+
+const persist = async () => {
+  if (!installId) return;
+  const state: PersistedInstallState = {
+    installId,
+    tracked,
+    attributionId: lastAttributionId,
+    offer: lastOffer,
+  };
+  await saveInstallState(storage, state);
+  debugLog("stored state", {
+    installId: state.installId,
+    tracked: state.tracked,
+    attributionId: state.attributionId,
+    offer: state.offer,
+  });
+};
+
+const hydrate = async () => {
+  const loaded = await loadInstallState(storage);
+  if (loaded) {
+    applyPersisted(loaded);
+    debugLog("hydrated state", loaded);
+  }
+};
+
+const ensureHydrated = async () => {
+  if (!hydratePromise) {
+    hydratePromise = hydrate();
+  }
+  await hydratePromise;
+};
 
 const ingestBase = (cfg: TapAppLinkConfig): string => {
   if (cfg.ingestUrl) return cfg.ingestUrl.replace(/\/$/, "");
@@ -72,15 +142,28 @@ const post = async (path: string, body: unknown) => {
   if (!config) {
     throw new Error("TapAppLink.configure() must be called first");
   }
-  const response = await fetch(`${ingestBase(config)}${path}`, {
+  const url = `${ingestBase(config)}${path}`;
+  const headers = {
+    Authorization: `Bearer ${config.publicKey}`,
+    "Content-Type": "application/json",
+  };
+  debugLog("request", {
+    url,
     method: "POST",
     headers: {
-      Authorization: `Bearer ${config.publicKey}`,
-      "Content-Type": "application/json",
+      ...headers,
+      Authorization: `Bearer ${redactKey(config.publicKey)}`,
     },
+    body,
+  });
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
     body: JSON.stringify(body),
   });
-  return response.json() as Promise<Record<string, unknown>>;
+  const result = (await response.json()) as Record<string, unknown>;
+  debugLog("response", { url, status: response.status, body: result });
+  return result;
 };
 
 const cacheFromResult = (result: Record<string, unknown>) => {
@@ -93,23 +176,48 @@ const cacheFromResult = (result: Record<string, unknown>) => {
   }
 };
 
+const platformName = (): "IOS" | "ANDROID" | "UNKNOWN" => {
+  if (Platform.OS === "ios") return "IOS";
+  if (Platform.OS === "android") return "ANDROID";
+  return "UNKNOWN";
+};
+
 export const TapAppLink = {
   configure: (next: TapAppLinkConfig) => {
     config = next;
+    storage = resolveStorage();
+    hydratePromise = hydrate();
+    debugLog("configure", {
+      environment: next.environment,
+      ingestUrl: next.ingestUrl,
+      publicKey: redactKey(next.publicKey),
+      debug: Boolean(next.debug),
+    });
   },
 
   trackInstall: async () => {
+    await ensureHydrated();
     if (tracked) {
-      return { matched: false, skipped: true };
+      const stored = {
+        matched: false,
+        skipped: true as const,
+        installId,
+        attributionId: lastAttributionId,
+        offer: lastOffer,
+      };
+      debugLog("trackInstall skipped; returning stored values", stored);
+      return stored;
     }
+
+    if (!installId) {
+      installId = createInstallId();
+      await persist();
+    }
+
     const signals = await collectSignals();
     const result = await post("/ingestInstall", {
-      platform:
-        Platform.OS === "ios"
-          ? "IOS"
-          : Platform.OS === "android"
-            ? "ANDROID"
-            : "UNKNOWN",
+      installId,
+      platform: platformName(),
       deviceFamily: signals.deviceFamily,
       locale: signals.locale,
       networkContext: signals.networkContext,
@@ -118,10 +226,12 @@ export const TapAppLink = {
     });
     tracked = true;
     cacheFromResult(result);
+    await persist();
     return result;
   },
 
   setAppUserId: async (appUserId: string) => {
+    await ensureHydrated();
     lastAppUserId = appUserId;
     return post("/ingestIdentify", {
       appUserId,
@@ -130,24 +240,22 @@ export const TapAppLink = {
   },
 
   applyCode: async (code: string) => {
+    await ensureHydrated();
     const result = await post("/redeemCode", {
       code,
       appUserId: lastAppUserId,
       attributionId: lastAttributionId,
-      platform:
-        Platform.OS === "ios"
-          ? "IOS"
-          : Platform.OS === "android"
-            ? "ANDROID"
-            : "UNKNOWN",
+      platform: platformName(),
     });
     cacheFromResult(result);
+    await persist();
     return result;
   },
 
   getOffer: () => lastOffer,
   getAttributionId: () => lastAttributionId,
   getAppUserId: () => lastAppUserId,
+  getInstallId: () => installId,
 
   linkRevenueCatUser: async (appUserId: string) =>
     TapAppLink.setAppUserId(appUserId),
@@ -158,10 +266,16 @@ export const TapAppLink = {
   linkQonversionUser: async (userId: string) => TapAppLink.setAppUserId(userId),
 
   resetForTesting: async () => {
+    config = null;
     tracked = false;
+    installId = undefined;
     lastAttributionId = undefined;
     lastAppUserId = undefined;
     lastOffer = null;
+    hydratePromise = null;
+    await clearInstallState(storage);
+    resetStorageHelpersForTesting();
+    storage = resolveStorage();
   },
 };
 

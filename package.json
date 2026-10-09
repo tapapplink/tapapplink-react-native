@@ -1,6 +1,6 @@
 {
   "name": "@tapapplink/react-native",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Tap App Link attribution SDK for React Native and Expo",
   "license": "MIT",
   "homepage": "https://tapapplink.com",
@@ -38,15 +38,21 @@
     "test": "jest",
     "prepublishOnly": "npm run build"
   },
-
   "publishConfig": {
     "access": "public"
   },
   "peerDependencies": {
+    "@react-native-async-storage/async-storage": ">=1.17.0",
     "react": "*",
     "react-native": ">=0.72.0"
   },
+  "peerDependenciesMeta": {
+    "@react-native-async-storage/async-storage": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@react-native-async-storage/async-storage": "^2.2.0",
     "@types/jest": "^29.5.14",
     "@types/react": "^18.3.12",
     "@typescript-eslint/eslint-plugin": "^8.46.0",

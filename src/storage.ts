@@ -56,7 +56,7 @@ export const resolveStorage = (): KeyValueStorage => {
   if (!warnedMissingStorage) {
     warnedMissingStorage = true;
     console.warn(
-      "[TapAppLink] @react-native-async-storage/async-storage is not installed; install state will not persist across launches. Add it as a dependency for Expo and bare React Native.",
+      "[TapAppLink] @react-native-async-storage/async-storage is not installed. Install state cannot persist, so each cold launch will post a new /ingestInstall until you add AsyncStorage.",
     );
   }
   return memoryStorage();

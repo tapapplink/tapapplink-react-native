@@ -6,11 +6,20 @@ Works in Expo **dev clients and production builds**. Expo Go cannot load the And
 
 ## Install
 
+Install the SDK and AsyncStorage together. AsyncStorage is required so install state survives cold launches; without it each launch can post a new install.
+
+**Expo**
+
 ```bash
-yarn add @tapapplink/react-native @react-native-async-storage/async-storage
+npx expo install @tapapplink/react-native @react-native-async-storage/async-storage
 ```
 
-`@react-native-async-storage/async-storage` is an optional peer used to persist install state across cold launches on both iOS and Android. Without it, tracking still works for the current process only.
+**Bare React Native**
+
+```bash
+npm install @tapapplink/react-native @react-native-async-storage/async-storage
+# or: yarn add @tapapplink/react-native @react-native-async-storage/async-storage
+```
 
 Bare React Native iOS apps should run `cd ios && pod install` after installing.
 

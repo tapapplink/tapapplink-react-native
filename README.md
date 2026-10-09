@@ -32,7 +32,10 @@ The Play Install Referrer bridge is Android-only. Storing install state only the
 ## Usage
 
 ```ts
-import { TapAppLink } from "@tapapplink/react-native";
+import {
+  TapAppLink,
+  TapAppLinkRedeemError,
+} from "@tapapplink/react-native";
 
 TapAppLink.configure({
   publicKey: "etk_live_…",
@@ -51,6 +54,89 @@ const offer = TapAppLink.getOffer();
 Set `debug: true` to log each request, response and stored state. The API key is redacted in those logs.
 
 Purchases are attributed with billing **webhooks**, not a client `trackPurchase` call.
+
+### Apply a creator code
+
+Show success only when `applyCode` resolves. Map each result to UI state as below. Customers must never see the word "environment".
+
+```ts
+type RedeemUi = {
+  title: string;
+  detail?: string;
+  hint?: string;
+  showCode: boolean;
+};
+
+async function redeemForUi(code: string): Promise<RedeemUi> {
+  try {
+    const result = await TapAppLink.applyCode(code);
+    const offerLine =
+      typeof result.offer === "object" &&
+      result.offer &&
+      typeof (result.offer as { creatorName?: string }).creatorName === "string"
+        ? `Offer from ${(result.offer as { creatorName: string }).creatorName}`
+        : undefined;
+
+    if (result.alreadyAttributed === true) {
+      return {
+        title: "You're all set",
+        detail: offerLine,
+        showCode: false,
+      };
+    }
+
+    return {
+      title: "Code applied",
+      detail: offerLine,
+      showCode: true,
+    };
+  } catch (error) {
+    if (error instanceof TapAppLinkRedeemError) {
+      switch (error.code) {
+        case "unknownCode":
+          return {
+            title: "We don't recognise that code. Check it and try again.",
+            hint: "Codes aren't case sensitive.",
+            showCode: true,
+          };
+        case "inactiveCode":
+          return {
+            title: "This code is no longer active.",
+            hint: "You can still subscribe at the regular price.",
+            showCode: true,
+          };
+        case "wrongEnvironment":
+          // Developer only. Customers see the unknownCode copy (never "environment").
+          console.warn(TapAppLinkRedeemError.wrongEnvironmentDevWarning);
+          return {
+            title: "We don't recognise that code. Check it and try again.",
+            hint: "Codes aren't case sensitive.",
+            showCode: true,
+          };
+        case "network":
+          return {
+            title:
+              "We couldn't check your code. Check your connection and try again.",
+            showCode: true,
+          };
+        case "other":
+        default:
+          console.warn("TapAppLink applyCode failed", {
+            code: error.code,
+            status: error.status,
+            message: error.message,
+          });
+          return {
+            title:
+              "We couldn't check your code. Check your connection and try again.",
+            showCode: true,
+          };
+      }
+    }
+    throw error;
+  }
+}
+```
 
 ## Publishing
 

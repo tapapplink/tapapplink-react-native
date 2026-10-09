@@ -1,0 +1,8 @@
+# Keep pack contents limited when "files" includes directories.
+**/__tests__/
+**/*.test.ts
+**/build/
+ci
+.github
+eslint.config.cjs
+jest.config.cjs

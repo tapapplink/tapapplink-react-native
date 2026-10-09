@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm run lint
+
+      - run: npm test
+
+      - run: npm run build
+
+      - name: Pack dry-run
+        run: npm pack --dry-run
+
+      - name: Check tag matches package.json version
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          EXPECTED="${TAG#v}"
+          ACTUAL="$(node -p "require('./package.json').version")"
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "Refusing to publish: tag '${TAG}' does not match package.json version '${ACTUAL}'."
+            echo "Create a tag named v\${version} only after bumping package.json (and the changelog) on the same commit."
+            exit 1
+          fi
+          echo "Tag ${TAG} matches package.json version ${ACTUAL}."
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance
+        env:
+          # Preferred: npm trusted publishing (OIDC). Optional fallback: NPM_TOKEN secret.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -32,6 +32,10 @@ const offer = TapAppLink.getOffer();
 
 Purchases are attributed with billing **webhooks**, not a client `trackPurchase` call.
 
+## Publishing
+
+Maintainers: see [PUBLISHING.md](./PUBLISHING.md) for the CI release tag flow and one-time npm trusted publishing setup.
+
 ## License
 
 MIT

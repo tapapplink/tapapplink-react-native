@@ -1,0 +1,6 @@
+ext {
+  compileSdkVersion = 35
+  minSdkVersion = 24
+  targetSdkVersion = 35
+  reactNativeVersion = "0.76.9"
+}

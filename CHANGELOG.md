@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+- Persist install id, tracked flag, attribution id and offer across launches (AsyncStorage optional peer).
+- Send `installId` on `/ingestInstall` so the server can dedupe; `trackInstall` posts only once per install.
+- Add opt-in `debug` configure flag with redacted API key logging.
+
 ## 0.2.0
 
 - Remove `discountBps` from `TapAppLinkOffer`. Present `billingOfferId` on the paywall.

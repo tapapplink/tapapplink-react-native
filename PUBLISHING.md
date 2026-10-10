@@ -34,8 +34,8 @@ No repo secret is required for Option A. The release workflow already sets `perm
 3. Tag that commit and push:
 
 ```bash
-git tag v0.2.1
-git push origin v0.2.1
+git tag v0.3.2
+git push origin v0.3.2
 ```
 
 Do not retag an old commit with a new version name. The publish job checks that `v*` equals `package.json` version on the tagged commit.

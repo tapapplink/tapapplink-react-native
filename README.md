@@ -59,24 +59,33 @@ Purchases are attributed with billing **webhooks**, not a client `trackPurchase`
 
 Show success only when `applyCode` resolves. Map each result to UI state as below. Customers must never see the word "environment".
 
+On a `network` (or timeout) error only, retry `applyCode` once with the same code. Do not auto-retry `unknownCode`, `inactiveCode`, or `wrongEnvironment`. If that retry also fails, show N6 ("We couldn't check your code. Check your connection and try again.") with a **Try again** button. From 0.3.2, that automatic retry is safe because the SDK reuses its request ID, so the server will not count the install twice.
+
 ```ts
 type RedeemUi = {
   title: string;
   detail?: string;
   hint?: string;
   showCode: boolean;
+  /** When true, show a Try again button (N6 after a failed network retry). */
+  tryAgain?: boolean;
 };
 
 async function redeemForUi(code: string): Promise<RedeemUi> {
-  try {
-    const result = await TapAppLink.applyCode(code);
-    const offerLine =
-      typeof result.offer === "object" &&
-      result.offer &&
-      typeof (result.offer as { creatorName?: string }).creatorName === "string"
-        ? `Offer from ${(result.offer as { creatorName: string }).creatorName}`
-        : undefined;
+  const offerLineFrom = (result: Record<string, unknown>): string | undefined => {
+    const offer = result.offer;
+    if (
+      offer &&
+      typeof offer === "object" &&
+      typeof (offer as { creatorName?: string }).creatorName === "string"
+    ) {
+      return `Offer from ${(offer as { creatorName: string }).creatorName}`;
+    }
+    return undefined;
+  };
 
+  const mapSuccess = (result: Record<string, unknown>): RedeemUi => {
+    const offerLine = offerLineFrom(result);
     if (result.alreadyAttributed === true) {
       return {
         title: "You're all set",
@@ -84,13 +93,20 @@ async function redeemForUi(code: string): Promise<RedeemUi> {
         showCode: false,
       };
     }
-
     return {
       title: "Code applied",
       detail: offerLine,
       showCode: true,
     };
-  } catch (error) {
+  };
+
+  const networkFailureUi = (): RedeemUi => ({
+    title: "We couldn't check your code. Check your connection and try again.",
+    showCode: true,
+    tryAgain: true,
+  });
+
+  const mapError = (error: unknown): RedeemUi => {
     if (error instanceof TapAppLinkRedeemError) {
       switch (error.code) {
         case "unknownCode":
@@ -114,11 +130,7 @@ async function redeemForUi(code: string): Promise<RedeemUi> {
             showCode: true,
           };
         case "network":
-          return {
-            title:
-              "We couldn't check your code. Check your connection and try again.",
-            showCode: true,
-          };
+          return networkFailureUi();
         case "other":
         default:
           console.warn("TapAppLink applyCode failed", {
@@ -126,14 +138,30 @@ async function redeemForUi(code: string): Promise<RedeemUi> {
             status: error.status,
             message: error.message,
           });
-          return {
-            title:
-              "We couldn't check your code. Check your connection and try again.",
-            showCode: true,
-          };
+          return networkFailureUi();
       }
     }
     throw error;
+  };
+
+  try {
+    return mapSuccess(await TapAppLink.applyCode(code));
+  } catch (error) {
+    // Auto-retry once for network/timeout only. Never for unknown/inactive/wrongEnvironment.
+    if (error instanceof TapAppLinkRedeemError && error.code === "network") {
+      try {
+        return mapSuccess(await TapAppLink.applyCode(code));
+      } catch (retryError) {
+        if (
+          retryError instanceof TapAppLinkRedeemError &&
+          retryError.code === "network"
+        ) {
+          return networkFailureUi();
+        }
+        return mapError(retryError);
+      }
+    }
+    return mapError(error);
   }
 }
 ```

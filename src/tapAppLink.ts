@@ -7,11 +7,12 @@ import {
   resolveStorage,
   saveInstallState,
   type KeyValueStorage,
+  type PendingRedeemState,
   type PersistedInstallState,
 } from "./storage";
 
 /** Sent as `X-TapAppLink-SDK-Version` on every request. */
-export const SDK_VERSION = "0.3.1";
+export const SDK_VERSION = "0.3.2";
 
 export type TapAppLinkEnvironment = "production" | "sandbox";
 
@@ -129,6 +130,19 @@ let tracked = false;
 let lastAttributionId: string | undefined;
 let lastAppUserId: string | undefined;
 let lastOffer: TapAppLinkOffer | null = null;
+let pendingRedeem: PendingRedeemState | null = null;
+
+/** Uppercase, strip non-alphanumerics, max 24 chars. Used only for requestId reuse. */
+const normaliseRedeemCode = (code: string): string =>
+  code
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 24);
+
+const isDefinitiveRedeemError = (code: TapAppLinkRedeemErrorCode): boolean =>
+  code === "unknownCode" ||
+  code === "inactiveCode" ||
+  code === "wrongEnvironment";
 
 const redactKey = (value: string): string => {
   if (value.length <= 8) return "***";
@@ -151,15 +165,20 @@ const applyPersisted = (state: PersistedInstallState) => {
   tracked = state.tracked;
   lastAttributionId = state.attributionId;
   lastOffer = state.offer ?? null;
+  pendingRedeem = state.pendingRedeem ?? null;
 };
 
 const persist = async () => {
-  if (!installId) return;
+  if (!installId && !pendingRedeem) return;
+  if (!installId) {
+    installId = createInstallId();
+  }
   const state: PersistedInstallState = {
     installId,
     tracked,
     attributionId: lastAttributionId,
     offer: lastOffer,
+    ...(pendingRedeem ? { pendingRedeem } : {}),
   };
   await saveInstallState(storage, state);
   debugLog("stored state", {
@@ -167,6 +186,7 @@ const persist = async () => {
     tracked: state.tracked,
     attributionId: state.attributionId,
     offer: state.offer,
+    pendingRedeem: state.pendingRedeem ?? null,
   });
 };
 
@@ -375,18 +395,38 @@ export const TapAppLink = {
 
   applyCode: async (code: string) => {
     await ensureHydrated();
+    const normalisedCode = normaliseRedeemCode(code);
+    let requestId: string;
+    if (
+      pendingRedeem &&
+      pendingRedeem.normalisedCode === normalisedCode
+    ) {
+      requestId = pendingRedeem.requestId;
+    } else {
+      requestId = createInstallId();
+      pendingRedeem = { normalisedCode, requestId };
+      await persist();
+    }
+
     try {
       const result = await post("/redeemCode", {
         code,
+        requestId,
         appUserId: lastAppUserId,
         attributionId: lastAttributionId,
         platform: platformName(),
       });
       cacheFromResult(result);
+      pendingRedeem = null;
       await persist();
       return result;
     } catch (error) {
-      throw mapRedeemError(error);
+      const mapped = mapRedeemError(error);
+      if (isDefinitiveRedeemError(mapped.code)) {
+        pendingRedeem = null;
+        await persist();
+      }
+      throw mapped;
     }
   },
 
@@ -410,6 +450,7 @@ export const TapAppLink = {
     lastAttributionId = undefined;
     lastAppUserId = undefined;
     lastOffer = null;
+    pendingRedeem = null;
     hydratePromise = null;
     await clearInstallState(storage);
     resetStorageHelpersForTesting();

@@ -63,8 +63,8 @@ describe("TapAppLink", () => {
 
     const headers = (fetchMock.mock.calls[0][1] as { headers: Record<string, string> })
       .headers;
-    expect(headers["X-TapAppLink-SDK-Version"]).toBe("0.3.1");
-    expect(SDK_VERSION).toBe("0.3.1");
+    expect(headers["X-TapAppLink-SDK-Version"]).toBe("0.3.2");
+    expect(SDK_VERSION).toBe("0.3.2");
   });
 
   it("tracks install once, sends installId, and caches offer", async () => {
@@ -387,6 +387,133 @@ describe("TapAppLink", () => {
       );
       expect(TapAppLink.getAttributionId()).toBeUndefined();
       expect(TapAppLink.getOffer()).toBeNull();
+    });
+
+    const redeemRequestId = (fetchMock: jest.Mock, callIndex: number) => {
+      const body = JSON.parse(
+        (fetchMock.mock.calls[callIndex][1] as { body: string }).body,
+      ) as { requestId: string; code: string };
+      return body;
+    };
+
+    it("reuses the same requestId when retrying applyCode after a timeout", async () => {
+      const fetchMock = jest
+        .fn()
+        .mockRejectedValueOnce(new Error("Network request failed"))
+        .mockResolvedValueOnce(
+          jsonResponse(200, {
+            attributionId: "attr_retry",
+            alreadyAttributed: false,
+          }),
+        );
+      global.fetch = fetchMock as unknown as typeof fetch;
+      configure();
+
+      await expect(TapAppLink.applyCode("ada-10")).rejects.toMatchObject({
+        code: "network",
+      });
+      const first = redeemRequestId(fetchMock, 0);
+      expect(first.requestId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      );
+
+      const result = await TapAppLink.applyCode("ADA10");
+      const second = redeemRequestId(fetchMock, 1);
+      expect(second.requestId).toBe(first.requestId);
+      expect(result).toMatchObject({ attributionId: "attr_retry" });
+      expect(asyncStore.get(STORAGE_KEY)).not.toContain("pendingRedeem");
+    });
+
+    it("reuses a pending requestId after an app restart", async () => {
+      const fetchMock = jest
+        .fn()
+        .mockRejectedValueOnce(new Error("Network request failed"))
+        .mockResolvedValueOnce(
+          jsonResponse(200, {
+            attributionId: "attr_restart",
+            alreadyAttributed: false,
+          }),
+        );
+      global.fetch = fetchMock as unknown as typeof fetch;
+      configure();
+
+      await expect(TapAppLink.applyCode("BEA10")).rejects.toMatchObject({
+        code: "network",
+      });
+      const first = redeemRequestId(fetchMock, 0);
+      const persisted = asyncStore.get(STORAGE_KEY);
+      expect(persisted).toContain(first.requestId);
+      expect(persisted).toContain("BEA10");
+
+      await TapAppLink.resetForTesting();
+      asyncStore.set(STORAGE_KEY, persisted!);
+      configure();
+
+      await TapAppLink.applyCode("bea-10");
+      const second = redeemRequestId(fetchMock, 1);
+      expect(second.requestId).toBe(first.requestId);
+    });
+
+    it("uses a new requestId when applyCode is called with a different code", async () => {
+      const fetchMock = jest
+        .fn()
+        .mockRejectedValueOnce(new Error("Network request failed"))
+        .mockRejectedValueOnce(new Error("Network request failed"));
+      global.fetch = fetchMock as unknown as typeof fetch;
+      configure();
+
+      await expect(TapAppLink.applyCode("ADA10")).rejects.toMatchObject({
+        code: "network",
+      });
+      await expect(TapAppLink.applyCode("BEA10")).rejects.toMatchObject({
+        code: "network",
+      });
+      const first = redeemRequestId(fetchMock, 0);
+      const second = redeemRequestId(fetchMock, 1);
+      expect(second.requestId).not.toBe(first.requestId);
+      expect(asyncStore.get(STORAGE_KEY)).toContain(second.requestId);
+      expect(asyncStore.get(STORAGE_KEY)).not.toContain(first.requestId);
+    });
+
+    it("clears the pending requestId after a definitive success or typed error", async () => {
+      const fetchMock = jest
+        .fn()
+        .mockRejectedValueOnce(new Error("Network request failed"))
+        .mockResolvedValueOnce(
+          jsonResponse(404, {
+            error: "unknown_code",
+            message: "Unknown",
+          }),
+        )
+        .mockResolvedValueOnce(
+          jsonResponse(200, {
+            attributionId: "attr_ok",
+            alreadyAttributed: false,
+          }),
+        );
+      global.fetch = fetchMock as unknown as typeof fetch;
+      configure();
+
+      await expect(TapAppLink.applyCode("ADA10")).rejects.toMatchObject({
+        code: "network",
+      });
+      expect(asyncStore.get(STORAGE_KEY)).toContain("pendingRedeem");
+      const pendingId = redeemRequestId(fetchMock, 0).requestId;
+
+      await expect(TapAppLink.applyCode("ADA10")).rejects.toMatchObject({
+        code: "unknownCode",
+      });
+      expect(redeemRequestId(fetchMock, 1).requestId).toBe(pendingId);
+      expect(asyncStore.get(STORAGE_KEY) ?? "").not.toContain(
+        '"pendingRedeem":{',
+      );
+
+      await TapAppLink.applyCode("ADA10");
+      const third = redeemRequestId(fetchMock, 2);
+      expect(third.requestId).not.toBe(pendingId);
+      expect(asyncStore.get(STORAGE_KEY) ?? "").not.toContain(
+        '"pendingRedeem":{',
+      );
     });
   });
 });

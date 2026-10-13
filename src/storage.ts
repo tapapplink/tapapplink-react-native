@@ -7,6 +7,8 @@ export type PersistedInstallState = {
   installId: string;
   tracked: boolean;
   attributionId?: string;
+  /** Last app user id that successfully completed `/ingestIdentify`. */
+  appUserId?: string;
   offer?: {
     creatorName: string;
     promoCode: string | null;
@@ -96,6 +98,8 @@ export const loadInstallState = async (
         typeof parsed.attributionId === "string"
           ? parsed.attributionId
           : undefined,
+      appUserId:
+        typeof parsed.appUserId === "string" ? parsed.appUserId : undefined,
       offer: parsed.offer ?? null,
       pendingRedeem,
     };

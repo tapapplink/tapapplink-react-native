@@ -6,19 +6,19 @@ Works in Expo **dev clients and production builds**. Expo Go cannot load the And
 
 ## Install
 
-Install **0.3.2 or later** of the SDK, together with AsyncStorage. AsyncStorage is required so install state survives cold launches; without it each launch can post a new install.
+Install **0.3.3 or later** of the SDK, together with AsyncStorage. AsyncStorage is required so install state survives cold launches; without it each launch can post a new install.
 
 **Expo**
 
 ```bash
-npx expo install @tapapplink/react-native@0.3.2 @react-native-async-storage/async-storage
+npx expo install @tapapplink/react-native@0.3.3 @react-native-async-storage/async-storage
 ```
 
 **Bare React Native**
 
 ```bash
-npm install @tapapplink/react-native@0.3.2 @react-native-async-storage/async-storage
-# or: yarn add @tapapplink/react-native@0.3.2 @react-native-async-storage/async-storage
+npm install @tapapplink/react-native@0.3.3 @react-native-async-storage/async-storage
+# or: yarn add @tapapplink/react-native@0.3.3 @react-native-async-storage/async-storage
 ```
 
 Bare React Native iOS apps should run `cd ios && pod install` after installing.
@@ -49,7 +49,7 @@ await TapAppLink.setAppUserId(await Purchases.getAppUserID());
 const offer = TapAppLink.getOffer();
 ```
 
-`trackInstall` posts `/ingestInstall` once per install (keyed by a persisted `installId`). Later launches restore the stored attribution id and offer without posting again. `setAppUserId` sends that stored `attributionId` after hydrate.
+`trackInstall` posts `/ingestInstall` once per install (keyed by a persisted `installId`). Later launches restore the stored attribution id and offer without posting again. `setAppUserId` sends that stored `attributionId` after hydrate, posts `/ingestIdentify` only when the app user id changes, and coalesces concurrent identical calls.
 
 Set `debug: true` to log each request, response and stored state. The API key is redacted in those logs.
 
@@ -59,7 +59,7 @@ Purchases are attributed with billing **webhooks**, not a client `trackPurchase`
 
 Show success only when `applyCode` resolves. Map each result to UI state as below. Customers must never see the word "environment".
 
-On a `network` (or timeout) error only, retry `applyCode` once with the same code. Do not auto-retry `unknownCode`, `inactiveCode`, or `wrongEnvironment`. If that retry also fails, show N6 ("We couldn't check your code. Check your connection and try again.") with a **Try again** button. From 0.3.2, that automatic retry is safe because the SDK reuses its request ID, so the server will not count the install twice.
+On a `network` (or timeout) error only, retry `applyCode` once with the same code. Do not auto-retry `unknownCode`, `inactiveCode`, or `wrongEnvironment`. If that retry also fails, show N6 ("We couldn't check your code. Check your connection and try again.") with a **Try again** button. From 0.3.2, that automatic retry is safe because the SDK reuses its request ID, so the server will not count the install twice. From 0.3.3, success results may include optional `codeMatches` and `offer.creatorName`.
 
 ```ts
 type RedeemUi = {

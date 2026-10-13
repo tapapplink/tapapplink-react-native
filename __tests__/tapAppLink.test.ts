@@ -63,8 +63,8 @@ describe("TapAppLink", () => {
 
     const headers = (fetchMock.mock.calls[0][1] as { headers: Record<string, string> })
       .headers;
-    expect(headers["X-TapAppLink-SDK-Version"]).toBe("0.3.2");
-    expect(SDK_VERSION).toBe("0.3.2");
+    expect(headers["X-TapAppLink-SDK-Version"]).toBe("0.3.3");
+    expect(SDK_VERSION).toBe("0.3.3");
   });
 
   it("tracks install once, sends installId, and caches offer", async () => {
@@ -182,6 +182,132 @@ describe("TapAppLink", () => {
     });
   });
 
+  it("skips ingestIdentify when appUserId matches the last successful identify", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { attributionId: "attr_id" }))
+      .mockResolvedValueOnce(jsonResponse(200, { ok: true }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    configure();
+    await TapAppLink.trackInstall();
+    const first = await TapAppLink.setAppUserId("user_same");
+    const second = await TapAppLink.setAppUserId("user_same");
+
+    expect(first).toMatchObject({ ok: true });
+    expect(second).toMatchObject({
+      skipped: true,
+      appUserId: "user_same",
+      attributionId: "attr_id",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(asyncStore.get(STORAGE_KEY)).toContain("user_same");
+  });
+
+  it("does not post ingestIdentify again after a cold start with the same appUserId", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { attributionId: "attr_cold_id" }))
+      .mockResolvedValueOnce(jsonResponse(200, { ok: true }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    configure();
+    await TapAppLink.trackInstall();
+    await TapAppLink.setAppUserId("user_persisted");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const persisted = asyncStore.get(STORAGE_KEY);
+    expect(persisted).toContain("user_persisted");
+    await TapAppLink.resetForTesting();
+    asyncStore.set(STORAGE_KEY, persisted!);
+
+    configure();
+    const resumed = await TapAppLink.setAppUserId("user_persisted");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(resumed).toMatchObject({
+      skipped: true,
+      appUserId: "user_persisted",
+      attributionId: "attr_cold_id",
+    });
+    expect(TapAppLink.getAppUserId()).toBe("user_persisted");
+  });
+
+  it("coalesces concurrent identical setAppUserId calls into one POST", async () => {
+    let resolveIdentify: ((value: unknown) => void) | undefined;
+    const identifyGate = new Promise((resolve) => {
+      resolveIdentify = resolve;
+    });
+    const fetchMock = jest.fn().mockImplementation(async (url: string) => {
+      if (String(url).includes("/ingestIdentify")) {
+        await identifyGate;
+        return jsonResponse(200, { ok: true });
+      }
+      return jsonResponse(200, { attributionId: "attr_race" });
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    configure();
+    await TapAppLink.trackInstall();
+
+    const a = TapAppLink.setAppUserId("user_race");
+    const b = TapAppLink.setAppUserId("user_race");
+    const c = TapAppLink.setAppUserId("user_race");
+    resolveIdentify?.(undefined);
+    const results = await Promise.all([a, b, c]);
+
+    expect(results[0]).toEqual(results[1]);
+    expect(results[1]).toEqual(results[2]);
+    expect(results[0]).toMatchObject({ ok: true });
+    const identifyCalls = fetchMock.mock.calls.filter((call) =>
+      String(call[0]).includes("/ingestIdentify"),
+    );
+    expect(identifyCalls).toHaveLength(1);
+  });
+
+  it("posts ingestIdentify again when appUserId changes", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { attributionId: "attr_change" }))
+      .mockResolvedValueOnce(jsonResponse(200, { ok: true }))
+      .mockResolvedValueOnce(jsonResponse(200, { ok: true }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    configure();
+    await TapAppLink.trackInstall();
+    await TapAppLink.setAppUserId("user_a");
+    await TapAppLink.setAppUserId("user_b");
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const secondIdentify = JSON.parse(
+      (fetchMock.mock.calls[2][1] as { body: string }).body,
+    ) as { appUserId: string };
+    expect(secondIdentify.appUserId).toBe("user_b");
+    expect(TapAppLink.getAppUserId()).toBe("user_b");
+    expect(asyncStore.get(STORAGE_KEY)).toContain("user_b");
+    expect(asyncStore.get(STORAGE_KEY)).not.toContain("user_a");
+  });
+
+  it("does not skip identify after a failed ingestIdentify", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { attributionId: "attr_fail" }))
+      .mockResolvedValueOnce(jsonResponse(500, { message: "identify failed" }))
+      .mockResolvedValueOnce(jsonResponse(200, { ok: true }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    configure();
+    await TapAppLink.trackInstall();
+    await expect(TapAppLink.setAppUserId("user_retry")).rejects.toThrow(
+      "identify failed",
+    );
+    const retry = await TapAppLink.setAppUserId("user_retry");
+
+    expect(retry).toMatchObject({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(asyncStore.get(STORAGE_KEY)).toContain("user_retry");
+  });
+
   it("does not treat a non-2xx ingest response as success", async () => {
     const fetchMock = jest.fn().mockResolvedValue(
       jsonResponse(500, {
@@ -249,6 +375,7 @@ describe("TapAppLink", () => {
         jsonResponse(200, {
           attributionId: "attr_applied",
           alreadyAttributed: false,
+          codeMatches: true,
           offer: {
             creatorName: "Ada",
             promoCode: "ADA10",
@@ -263,6 +390,8 @@ describe("TapAppLink", () => {
       expect(result).toMatchObject({
         attributionId: "attr_applied",
         alreadyAttributed: false,
+        codeMatches: true,
+        offer: { creatorName: "Ada" },
       });
       expect(TapAppLink.getOffer()?.creatorName).toBe("Ada");
       expect(TapAppLink.getAttributionId()).toBe("attr_applied");

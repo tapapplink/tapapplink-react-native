@@ -12,7 +12,7 @@ import {
 } from "./storage";
 
 /** Sent as `X-TapAppLink-SDK-Version` on every request. */
-export const SDK_VERSION = "0.3.2";
+export const SDK_VERSION = "0.3.3";
 
 export type TapAppLinkEnvironment = "production" | "sandbox";
 
@@ -20,6 +20,22 @@ export type TapAppLinkOffer = {
   creatorName: string;
   promoCode: string | null;
   billingOfferId: string | null;
+};
+
+/**
+ * Success body from `/redeemCode`. New fields from the server are optional so
+ * older clients keep type-checking.
+ */
+export type TapAppLinkRedeemResult = {
+  attributionId?: string;
+  alreadyAttributed?: boolean;
+  /** True when the submitted code matches the attributed creator offer. */
+  codeMatches?: boolean;
+  offer?: {
+    creatorName?: string;
+    promoCode?: string | null;
+    billingOfferId?: string | null;
+  } | null;
 };
 
 export type TapAppLinkConfig = {
@@ -129,8 +145,12 @@ let installId: string | undefined;
 let tracked = false;
 let lastAttributionId: string | undefined;
 let lastAppUserId: string | undefined;
+/** Last app user id that successfully completed `/ingestIdentify` (persisted). */
+let identifiedAppUserId: string | undefined;
 let lastOffer: TapAppLinkOffer | null = null;
 let pendingRedeem: PendingRedeemState | null = null;
+/** Coalesce concurrent identical `setAppUserId` calls into one POST. */
+const identifyInFlight = new Map<string, Promise<Record<string, unknown>>>();
 
 /** Uppercase, strip non-alphanumerics, max 24 chars. Used only for requestId reuse. */
 const normaliseRedeemCode = (code: string): string =>
@@ -164,12 +184,16 @@ const applyPersisted = (state: PersistedInstallState) => {
   installId = state.installId;
   tracked = state.tracked;
   lastAttributionId = state.attributionId;
+  identifiedAppUserId = state.appUserId;
+  if (state.appUserId) {
+    lastAppUserId = state.appUserId;
+  }
   lastOffer = state.offer ?? null;
   pendingRedeem = state.pendingRedeem ?? null;
 };
 
 const persist = async () => {
-  if (!installId && !pendingRedeem) return;
+  if (!installId && !pendingRedeem && !identifiedAppUserId) return;
   if (!installId) {
     installId = createInstallId();
   }
@@ -177,6 +201,7 @@ const persist = async () => {
     installId,
     tracked,
     attributionId: lastAttributionId,
+    ...(identifiedAppUserId ? { appUserId: identifiedAppUserId } : {}),
     offer: lastOffer,
     ...(pendingRedeem ? { pendingRedeem } : {}),
   };
@@ -185,6 +210,7 @@ const persist = async () => {
     installId: state.installId,
     tracked: state.tracked,
     attributionId: state.attributionId,
+    appUserId: state.appUserId,
     offer: state.offer,
     pendingRedeem: state.pendingRedeem ?? null,
   });
@@ -387,13 +413,42 @@ export const TapAppLink = {
   setAppUserId: async (appUserId: string) => {
     await ensureHydrated();
     lastAppUserId = appUserId;
-    return post("/ingestIdentify", {
-      appUserId,
-      attributionId: lastAttributionId,
-    });
+
+    if (identifiedAppUserId === appUserId) {
+      const skipped = {
+        skipped: true as const,
+        appUserId,
+        attributionId: lastAttributionId,
+      };
+      debugLog("setAppUserId skipped; already identified", skipped);
+      return skipped;
+    }
+
+    const existing = identifyInFlight.get(appUserId);
+    if (existing) {
+      debugLog("setAppUserId coalesced with in-flight identify", { appUserId });
+      return existing;
+    }
+
+    const promise = (async (): Promise<Record<string, unknown>> => {
+      try {
+        const result = await post("/ingestIdentify", {
+          appUserId,
+          attributionId: lastAttributionId,
+        });
+        identifiedAppUserId = appUserId;
+        await persist();
+        return result;
+      } finally {
+        identifyInFlight.delete(appUserId);
+      }
+    })();
+
+    identifyInFlight.set(appUserId, promise);
+    return promise;
   },
 
-  applyCode: async (code: string) => {
+  applyCode: async (code: string): Promise<TapAppLinkRedeemResult> => {
     await ensureHydrated();
     const normalisedCode = normaliseRedeemCode(code);
     let requestId: string;
@@ -419,7 +474,7 @@ export const TapAppLink = {
       cacheFromResult(result);
       pendingRedeem = null;
       await persist();
-      return result;
+      return result as TapAppLinkRedeemResult;
     } catch (error) {
       const mapped = mapRedeemError(error);
       if (isDefinitiveRedeemError(mapped.code)) {
@@ -449,9 +504,11 @@ export const TapAppLink = {
     installId = undefined;
     lastAttributionId = undefined;
     lastAppUserId = undefined;
+    identifiedAppUserId = undefined;
     lastOffer = null;
     pendingRedeem = null;
     hydratePromise = null;
+    identifyInFlight.clear();
     await clearInstallState(storage);
     resetStorageHelpersForTesting();
     storage = resolveStorage();
